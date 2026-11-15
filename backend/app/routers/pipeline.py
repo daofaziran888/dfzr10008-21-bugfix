@@ -1,4 +1,4 @@
-"""数据管线编排接口：维护管线节点，覆盖启动管线、暂停管线、归档管线等动作。"""
+"""数据管线编排接口：维护管线节点，覆盖启动管线、暂停管线、归档管线、标记失败、恢复节点等动作。"""
 from __future__ import annotations
 
 from typing import Any
@@ -50,7 +50,7 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条管线节点执行启动管线、暂停管线、归档管线；不允许的动作会被拦下并说明原因。"""
+    """对单条管线节点执行启动管线、暂停管线、归档管线、标记失败、恢复节点；越序或越权的动作会被拦下并说明原因。"""
     action = str(payload.values.get("action") or "").strip()
     entry, message = service.run_action(entry_id, action)
     if entry is None:

@@ -18,6 +18,15 @@
       </article>
     </div>
 
+    <form v-if="showCreate" class="filter-bar" @submit.prevent="submitCreate">
+      <label v-for="field in createFields" :key="field" class="filter-item">
+        <span>{{ field }}</span>
+        <input v-model="createValues[field]" :placeholder="`请输入${field}`" />
+      </label>
+      <button class="btn primary" type="submit">保存管线节点</button>
+      <button class="btn ghost" type="button" @click="showCreate = false">取消</button>
+    </form>
+
     <form class="filter-bar" @submit.prevent="reload">
       <label v-for="field in filterFields" :key="field" class="filter-item">
         <span>{{ field }}</span>
@@ -36,10 +45,10 @@
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
-          <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+          <td v-for="column in columns" :key="column">{{ displayCell(row, column) }}</td>
           <td class="row-actions">
             <button
-              v-for="action in actions"
+              v-for="action in availableActions(row)"
               :key="action"
               class="link"
               type="button"
@@ -47,6 +56,7 @@
             >
               {{ action }}
             </button>
+            <span v-if="!availableActions(row).length" class="empty-state">—</span>
           </td>
         </tr>
         <tr v-if="!rows.length">
@@ -67,12 +77,18 @@ import { onMounted, ref } from 'vue'
 
 import { request } from '@/api/client'
 
-type Row = Record<string, string | number | null>
+type Row = Record<string, string | number | boolean | null>
 
 const ENDPOINT = '/api/pipeline'
 const columns = ["节点编号", "节点名称", "上游节点", "处理逻辑", "输出格式", "错误处理", "重试策略", "节点状态"]
-const actions = ["启动管线", "暂停管线", "归档管线"]
-const statuses = ["草稿", "运行中", "已暂停", "已完成"]
+const createFields = ["节点编号", "节点名称", "上游节点", "处理逻辑", "输出格式", "错误处理", "重试策略"]
+// 动作入口与节点状态同步：只允许当前状态下生命周期里确实可执行的动作。
+const STATUS_ACTIONS: Record<string, string[]> = {
+  草稿: ["启动管线"],
+  运行中: ["暂停管线", "标记失败"],
+  已暂停: ["启动管线", "归档管线"],
+  已完成: [],
+}
 const stats = [{"label": "管线节点总数", "value": 0}, {"label": "运行中管线", "value": 0}, {"label": "已暂停管线", "value": 0}]
 
 const rows = ref<Row[]>([])
@@ -80,6 +96,34 @@ const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+const showCreate = ref(false)
+const createValues = ref<Record<string, string>>({})
+
+function isFailed(row: Row): boolean {
+  return row.abnormal === true || row.abnormal === 'true'
+}
+
+function availableActions(row: Row): string[] {
+  const status = String(row['节点状态'] ?? row.status ?? '')
+  if (status === '已完成') {
+    return []
+  }
+  if (isFailed(row)) {
+    return ['恢复节点']
+  }
+  return STATUS_ACTIONS[status] ?? []
+}
+
+function displayCell(row: Row, column: string): string | number {
+  const value = row[column]
+  if (column === '节点状态' && isFailed(row)) {
+    return `${value ?? '—'}（失败）`
+  }
+  if (value === null || value === undefined) {
+    return '—'
+  }
+  return typeof value === 'boolean' ? String(value) : value
+}
 
 function resetFilters() {
   filters.value = {}
@@ -91,7 +135,27 @@ function exportRows() {
 }
 
 function openCreate() {
-  errorMessage.value = '管线节点登记入口尚未接入审批流'
+  createValues.value = {}
+  showCreate.value = true
+  errorMessage.value = ''
+}
+
+async function submitCreate() {
+  errorMessage.value = ''
+  try {
+    const response = await request(ENDPOINT, {
+      method: 'POST',
+      body: JSON.stringify({ values: createValues.value }),
+    })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.message ?? '管线节点登记失败，请稍后重试')
+    }
+    showCreate.value = false
+    await reload()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '管线节点登记失败'
+  }
 }
 
 async function runAction(action: string, row: Row) {
@@ -99,10 +163,11 @@ async function runAction(action: string, row: Row) {
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values: { action } }),
     })
-    if (!response.ok) {
-      throw new Error('数据管线编排动作未生效，请稍后重试')
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.message ?? '数据管线编排动作未生效，请稍后重试')
     }
     await reload()
   } catch (error) {
